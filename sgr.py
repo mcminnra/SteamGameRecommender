@@ -101,6 +101,25 @@ def get_appid_tags(appid):
     return tags
 
 
+def get_appid_developers(appid):
+    """
+    Gets the app developers from a Steam Store Page
+
+    Parameters
+    ----------
+    appid : int
+        Steam app's appid (i.e. every game has one. It's in the address bar of a game's store page)
+
+    Returns
+    -------
+    list
+        list of developers and publishers
+    """
+    tree = get_steam_store_html(appid)
+    devs = tree.xpath('//div[@id="developers_list"]/a/text()')
+    return devs
+
+
 def get_appid_reviews(appid):
     """
     Gets reviews (count and like%) from recent and all reviews on a steam store page
@@ -285,7 +304,14 @@ def recommend_games():
         tags = list(dict.fromkeys([TAGS_MAP[tag] if tag in TAGS_MAP.keys() else tag for tag in tags]))  # Map specific tags to more general ones
         tags_dict[index] = tags[:NUM_OF_TAGS]
 
+    # Get developers
+    devs_dict = {}
+    for index in track(df.index.values, description='Getting Steam Developers for Rated Games'):
+        devs_dict[index] = get_appid_developers(index)
+
+    # Get unique values lists
     UNIQUE_TAGS= sorted(list(set().union(*list(tags_dict.values()))))
+    UNIQUE_DEVS= sorted(list(set().union(*list(devs_dict.values()))))
 
     # Panel - Unique Tags
     print(Panel(Columns(UNIQUE_TAGS, equal=True), title="Unique Training Tags"))
@@ -296,11 +322,20 @@ def recommend_games():
                 
     # Map tag rank to df
     for index, row in track(df.iterrows(), description='Creating Tag columns and ranking based on importance', total=len(df)):
-        tags = tags_dict[index]
-                    
+        tags = tags_dict[index]        
         for tag, rank in zip(tags, np.arange(len(tags), 0, -1)):
             df.at[index, tag] = int(rank)  # For Importance Ranking
             #df.at[index, tag] = 1  # Binary Has/Not Has Flag
+
+    # Create dev columns
+    for dev in UNIQUE_DEVS:
+        df[dev] = 0
+                
+    # Map tag rank to df
+    for index, row in track(df.iterrows(), description='Creating Developer columns', total=len(df)):
+        devs = devs_dict[index]        
+        for dev in devs:
+            df.at[index, dev] = 1  # Binary Has/Not Has Flag
 
     # === Creating training dataframes ===
     print(f'::  Creating training set dataframes...')
@@ -375,7 +410,21 @@ def recommend_games():
                 df_test.at[index, tag] = int(rank)  # For Importance Ranking
                 #df_test.at[index, tag] = 1  # Binary Has/Not Has Flag
             else:
-                #print(f'tag "{tag}" not in input -- ignoring')
+                print(f'tag "{tag}" not in input -- ignoring')
+                pass
+
+    # Grab model dev input
+    for dev in UNIQUE_DEVS:
+        df_test[dev] = 0
+
+    # Get tag ranks for tags that exist in model input
+    for index in track(df_test.index.values, description='Getting test developers and mapping to train developer inputs'):
+        devs = get_appid_developers(index)
+        for dev in devs:
+            if dev in UNIQUE_DEVS:
+                df_test.at[index, dev] = 1  # Binary Has/Not Has Flag
+            else:
+                print(f'developer "{dev}" not in input -- ignoring')
                 pass
 
     # === Recommendations ===
@@ -409,20 +458,39 @@ def recommend_games():
     }
     output_df = pd.DataFrame(output_data).sort_values('Predicted Score', ascending=False)
 
+    # Table - UProfile Tags
+    u_profile = u_profile.sort_values(ascending=False)
+    u_profile_table = Table(title="User Tags Profile", show_header=True, header_style="bold purple")
+    u_profile_table.add_column("Tag")
+    u_profile_table.add_column("Estimated Value", justify="right", style="bold")
+    for index, value in u_profile.items():
+        u_profile_table.add_row(index, f'{value:0.2f}')
+    console.print(u_profile_table)
+
     # Table - All Games Predicted Score
+    sim_mean = output_df['User Profile Similarity'].mean()
+    sim_std = output_df['User Profile Similarity'].std()
     predicted_games_table = Table(title="Predicted Score for Steam Library and Wishlist Games", show_header=True, header_style="bold purple")
     predicted_games_table.add_column("Steam AppId", style="cyan")
     predicted_games_table.add_column("Game")
     predicted_games_table.add_column("User Profile Similarity", justify="right", style="bold")
     predicted_games_table.add_column("Predicted Score", justify="right", style="bold")
     for i, row in output_df.iterrows():
-        # Color according to score value
+        # Color score value
         score_string = str(np.round(row['Predicted Score'], 2))
         if row['Predicted Score'] >= 7:
             score_string = "[green]" + score_string
         elif row['Predicted Score'] < 4:
             score_string = "[red]" + score_string
-        predicted_games_table.add_row(row['Steam AppId'], row.Game, str(row['User Profile Similarity']), score_string)
+
+        # Color Similarity
+        sim_string = f'{row["User Profile Similarity"]*100:0.2f}%'
+        if row['User Profile Similarity'] >= (sim_mean + sim_std):
+            sim_string = "[green]" + sim_string
+        elif row['User Profile Similarity'] <= (sim_mean - sim_std):
+            sim_string = "[red]" + sim_string
+        
+        predicted_games_table.add_row(row['Steam AppId'], row.Game, sim_string, score_string)
     console.print(predicted_games_table)
         
     return model, output_df, X_test
