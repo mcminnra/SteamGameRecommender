@@ -1,4 +1,4 @@
-name: steam-game-recommender
+name: sgr
 channels:
   - conda-forge
   - defaults
@@ -11,7 +11,7 @@ dependencies:
   - rich
   - scikit-learn
   - shap
-  - xlrd
+  - openpyxl
   - pip
   - pip:
     - xgboost
